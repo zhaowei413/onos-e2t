@@ -209,6 +209,7 @@ func (e *E2APServer) E2Setup(ctx context.Context, request *e2appducontents.E2Set
 	}
 	log.Infof("Sending E2 setup response %+v", response)
 	e.mgmtConns.open(mgmtConn)
+	go e.createE2APConnection(ctx, mgmtConn)
 	return response, nil, nil
 }
 
@@ -284,3 +285,31 @@ func (e *E2APServer) E2ConfigurationUpdate(ctx context.Context, request *e2appdu
 	e.e2apConns.open(e.e2apConn)
 	return e2ncua, nil, nil
 }
+
+func (e *E2APServer) createE2APConnection(ctx context.Context, mgmtConn *ManagementConn) {
+	ch := make(chan topoapi.Event, 5)
+	defer close(ch)
+
+	filters := &topoapi.Filters{
+		KindFilter: &topoapi.Filter{
+			Filter: &topoapi.Filter_Equal_{
+				Equal_: &topoapi.EqualFilter{
+					Value: topoapi.E2NODE,
+				},
+			},
+		},
+	}
+	if err := e.rnib.Watch(ctx, ch, filters); err != nil {
+		log.Errorf("watch e2 node events: %v", err)
+		return
+	}
+
+	for event := range ch {
+		if event.GetType() == topoapi.EventType_ADDED && event.Object.ID == mgmtConn.E2NodeID {
+			e.e2apConn = NewE2APConn(mgmtConn.E2NodeID, e.serverConn, e.streams, e.rnib)
+			e.e2apConns.open(e.e2apConn)
+			log.Infof("create e2ap connection after setup: %v", mgmtConn.E2NodeID)
+		}
+	}
+}
+
